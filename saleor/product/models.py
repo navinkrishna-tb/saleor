@@ -207,7 +207,7 @@ class Product(SeoModel, ModelWithMetadata, ModelWithExternalReference):
         null=True,
         on_delete=models.SET_NULL,
     )
-    name = models.CharField(max_length=250)
+    account_id = models.CharField(max_length=250)
 
     objects = managers.ProductManager()
 
