@@ -214,6 +214,9 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         gross_amount_field="shipping_price_gross_amount",
         currency_field="currency",
     )
+    # Price with applied shipping voucher discount
+    # (for draft order - price without discount)
+    # FIXME (SHOPX-875)
     base_shipping_price_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
@@ -565,7 +568,8 @@ class OrderLine(ModelWithMetadata):
     unit_discount_type = models.CharField(
         max_length=10,
         choices=DiscountValueType.CHOICES,
-        default=DiscountValueType.FIXED,
+        null=True,
+        blank=True,
     )
     unit_discount_reason = models.TextField(blank=True, null=True)
 
@@ -687,6 +691,8 @@ class OrderLine(ModelWithMetadata):
     tax_class_metadata = JSONField(
         blank=True, null=True, default=dict, encoder=CustomJsonEncoder
     )
+
+    is_price_overridden = models.BooleanField(null=True, blank=True)
 
     # Fulfilled when voucher code was used for product in the line
     voucher_code = models.CharField(max_length=255, null=True, blank=True)
@@ -839,7 +845,8 @@ class OrderEvent(models.Model):
     class Meta:
         ordering = ("date",)
         indexes = [
-            BTreeIndex(fields=["related"], name="order_orderevent_related_id_idx")
+            BTreeIndex(fields=["related"], name="order_orderevent_related_id_idx"),
+            models.Index(fields=["type"]),
         ]
 
     def __repr__(self):

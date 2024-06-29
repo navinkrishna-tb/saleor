@@ -232,6 +232,9 @@ class Product(SeoModel, ModelWithMetadata, ModelWithExternalReference):
                 fields=["name", "slug"],
                 opclasses=["gin_trgm_ops"] * 2,
             ),
+            models.Index(
+                fields=["category_id", "slug"],
+            ),
         ]
         indexes.extend(ModelWithMetadata.Meta.indexes)
 
@@ -397,7 +400,7 @@ class ProductVariant(SortableModel, ModelWithMetadata, ModelWithExternalReferenc
 
         if price_override is None:
             return channel_listing.discounted_price or channel_listing.price
-        price: "Money" = self.get_base_price(channel_listing, price_override)
+        price: Money = self.get_base_price(channel_listing, price_override)
         rules = promotion_rules or []
         return calculate_discounted_price_for_rules(
             price=price, rules=rules, currency=channel_listing.currency

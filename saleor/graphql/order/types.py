@@ -62,7 +62,7 @@ from ..account.utils import (
 from ..app.dataloaders import AppByIdLoader
 from ..app.types import App
 from ..channel import ChannelContext
-from ..channel.dataloaders import ChannelByIdLoader, ChannelByOrderLineIdLoader
+from ..channel.dataloaders import ChannelByIdLoader, ChannelByOrderIdLoader
 from ..channel.types import Channel
 from ..checkout.utils import prevent_sync_event_circular_query
 from ..core.connection import CountableConnection
@@ -836,6 +836,10 @@ class OrderLine(ModelObjectType[models.OrderLine]):
         description="Price of the order line without discounts.",
         required=True,
     )
+    is_price_overridden = graphene.Boolean(
+        description="Returns True, if the line unit price was overridden."
+        + ADDED_IN_314,
+    )
     variant = graphene.Field(
         ProductVariant,
         required=False,
@@ -1024,16 +1028,41 @@ class OrderLine(ModelObjectType[models.OrderLine]):
         )
 
     @staticmethod
-    def resolve_unit_discount_type(root: models.OrderLine, _info):
-        return root.unit_discount_type
+    def resolve_unit_discount_type(root: models.OrderLine, info):
+        def _resolve_unit_discount_type(data):
+            order, lines, manager = data
+            return calculations.order_line_unit_discount_type(
+                order, root, manager, lines
+            )
+
+        order = OrderByIdLoader(info.context).load(root.order_id)
+        lines = OrderLinesByOrderIdLoader(info.context).load(root.order_id)
+        manager = get_plugin_manager_promise(info.context)
+        return Promise.all([order, lines, manager]).then(_resolve_unit_discount_type)
 
     @staticmethod
-    def resolve_unit_discount_value(root: models.OrderLine, _info):
-        return root.unit_discount_value
+    def resolve_unit_discount_value(root: models.OrderLine, info):
+        def _resolve_unit_discount_value(data):
+            order, lines, manager = data
+            return calculations.order_line_unit_discount_value(
+                order, root, manager, lines
+            )
+
+        order = OrderByIdLoader(info.context).load(root.order_id)
+        lines = OrderLinesByOrderIdLoader(info.context).load(root.order_id)
+        manager = get_plugin_manager_promise(info.context)
+        return Promise.all([order, lines, manager]).then(_resolve_unit_discount_value)
 
     @staticmethod
-    def resolve_unit_discount(root: models.OrderLine, _info):
-        return root.unit_discount
+    def resolve_unit_discount(root: models.OrderLine, info):
+        def _resolve_unit_discount(data):
+            order, lines, manager = data
+            return calculations.order_line_unit_discount(order, root, manager, lines)
+
+        order = OrderByIdLoader(info.context).load(root.order_id)
+        lines = OrderLinesByOrderIdLoader(info.context).load(root.order_id)
+        manager = get_plugin_manager_promise(info.context)
+        return Promise.all([order, lines, manager]).then(_resolve_unit_discount)
 
     @staticmethod
     @traced_resolver
@@ -1136,7 +1165,7 @@ class OrderLine(ModelObjectType[models.OrderLine]):
             )
 
         variant = ProductVariantByIdLoader(context).load(root.variant_id)
-        channel = ChannelByOrderLineIdLoader(context).load(root.id)
+        channel = ChannelByOrderIdLoader(context).load(root.order_id)
 
         return Promise.all([variant, channel]).then(requestor_has_access_to_variant)
 
@@ -1572,6 +1601,7 @@ class Order(ModelObjectType[models.Order]):
         return root.id
 
     @staticmethod
+    @prevent_sync_event_circular_query
     def resolve_discounts(root: models.Order, info):
         @allow_writer_in_context(info.context)
         def with_manager(manager):
@@ -1588,7 +1618,9 @@ class Order(ModelObjectType[models.Order]):
                 return None
             for discount in discounts:
                 if discount.type == DiscountType.VOUCHER:
-                    return Money(amount=discount.value, currency=discount.currency)
+                    return Money(
+                        amount=discount.amount_value, currency=discount.currency
+                    )
             return None
 
         return (

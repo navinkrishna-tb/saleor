@@ -307,9 +307,12 @@ def _create_line_for_order(
         prices_entered_with_tax,
     )
 
-    voucher_code = None
+    line_voucher_code = None
     if checkout_line_info.voucher:
-        voucher_code = checkout_line_info.voucher.code
+        line_voucher_code = checkout_line_info.voucher.code
+    order_voucher_code = None
+    if checkout_info.voucher:
+        order_voucher_code = checkout_info.voucher.code
 
     discount_price = undiscounted_unit_price - unit_price
     if prices_entered_with_tax:
@@ -317,15 +320,17 @@ def _create_line_for_order(
     else:
         discount_amount = discount_price.net
 
-    unit_discount_reason = None
-    if voucher_code:
-        unit_discount_reason = f"Voucher code: {voucher_code}"
+    unit_discount_reason = _get_unit_discount_reason(
+        line_voucher_code, order_voucher_code
+    )
 
     tax_class = None
     if product.tax_class_id:
         tax_class = product.tax_class
     else:
         tax_class = product.product_type.tax_class
+
+    is_price_overridden = checkout_line.price_override is not None
 
     line = OrderLine(  # type: ignore[misc] # see below:
         product_name=product_name,
@@ -344,12 +349,14 @@ def _create_line_for_order(
         undiscounted_total_price=undiscounted_total_price,  # money field not supported by mypy_django_plugin # noqa: E501
         total_price=total_line_price,
         tax_rate=tax_rate,
-        voucher_code=voucher_code,
+        voucher_code=line_voucher_code,
         unit_discount=discount_amount,  # money field not supported by mypy_django_plugin # noqa: E501
         unit_discount_reason=unit_discount_reason,
         unit_discount_value=discount_amount.amount,  # we store value as fixed discount
+        unit_discount_type=DiscountValueType.FIXED,
         base_unit_price=base_unit_price,  # money field not supported by mypy_django_plugin # noqa: E501
         undiscounted_base_unit_price=undiscounted_base_unit_price,  # money field not supported by mypy_django_plugin # noqa: E501
+        is_price_overridden=is_price_overridden,
         metadata=checkout_line.metadata,
         private_metadata=checkout_line.private_metadata,
         **get_tax_class_kwargs_for_order_line(tax_class),
@@ -383,6 +390,18 @@ def _create_line_for_order(
     )
 
     return line_info
+
+
+def _get_unit_discount_reason(
+    line_voucher_code: Optional[str],
+    order_voucher_code: Optional[str],
+) -> Optional[str]:
+    unit_discount_reason = None
+    if line_voucher_code:
+        unit_discount_reason = f"Voucher code: {line_voucher_code}"
+    elif order_voucher_code:
+        unit_discount_reason = f"Entire order voucher code: {order_voucher_code}"
+    return unit_discount_reason
 
 
 def _create_order_line_discounts(
@@ -1060,7 +1079,7 @@ def _create_order_lines_from_checkout_lines(
         prices_entered_with_tax,
     )
     order_lines = []
-    order_line_discounts: list["OrderLineDiscount"] = []
+    order_line_discounts: list[OrderLineDiscount] = []
     for line_info in order_lines_info:
         line = line_info.line
         line.order_id = order_pk
@@ -1450,6 +1469,7 @@ def complete_checkout(
     metadata_list: Optional[list] = None,
     private_metadata_list: Optional[list] = None,
 ) -> tuple[Optional[Order], bool, dict]:
+    checkout = checkout_info.checkout
     transactions = checkout_info.checkout.payment_transactions.all()
 
     force_update = checkout_info.checkout.tax_error is not None
@@ -1465,20 +1485,26 @@ def complete_checkout(
             code=CheckoutErrorCode.TAX_ERROR.value,
         )
 
-    # When checkout is zero, we don't need any transaction to cover the checkout total.
-    # We check if checkout is zero, and we also check what flow for marking an order as
-    # paid is used. In case when we have TRANSACTION_FLOW we use transaction flow to
-    # finalize the checkout.
+    active_payment = checkout.get_last_active_payment()
+    is_checkout_fully_authorized = (
+        checkout.authorize_status == CheckoutAuthorizeStatus.FULL
+    )
     checkout_is_zero = checkout_info.checkout.total.gross.amount == Decimal(0)
     is_transaction_flow = (
         checkout_info.channel.order_mark_as_paid_strategy
         == MarkAsPaidStrategy.TRANSACTION_FLOW
     )
+    # When checkout is zero, we don't need any transaction to cover the checkout total.
+    # We check if checkout is zero, and we also check what flow for marking an order as
+    # paid is used. In case when we have TRANSACTION_FLOW we use transaction flow to
+    # finalize the checkout.
+    # When checkout is not fully authorized and contains active payment, we use the
+    # payment flow to finalize the checkout.
     if (
-        transactions
+        is_checkout_fully_authorized
+        or (transactions and not active_payment)
         or checkout_info.channel.allow_unpaid_orders
-        or checkout_is_zero
-        and is_transaction_flow
+        or (checkout_is_zero and is_transaction_flow)
     ):
         order = complete_checkout_with_transaction(
             manager=manager,

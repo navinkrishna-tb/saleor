@@ -474,6 +474,7 @@ def test_checkout_with_charged(
     assert order_line.tax_class_name == line_tax_class.name
     assert order_line.tax_class_metadata == line_tax_class.metadata
     assert order_line.tax_class_private_metadata == line_tax_class.private_metadata
+    assert order_line.is_price_overridden is False
 
     assert order.shipping_address == address
     assert order.shipping_method == checkout.shipping_method
@@ -486,6 +487,105 @@ def test_checkout_with_charged(
 
     assert not Checkout.objects.filter()
     assert not len(Reservation.objects.all())
+
+
+def test_checkout_price_override(
+    user_api_client,
+    checkout_with_gift_card,
+    transaction_item_generator,
+    address,
+    shipping_method,
+):
+    # given
+    checkout = checkout_with_gift_card
+    checkout.shipping_address = address
+    checkout.shipping_method = shipping_method
+    checkout.billing_address = address
+    checkout.metadata_storage.store_value_in_metadata(items={"accepted": "true"})
+    checkout.metadata_storage.store_value_in_private_metadata(
+        items={"accepted": "false"}
+    )
+    checkout.tax_exemption = True
+    checkout.save()
+    checkout.metadata_storage.save()
+
+    checkout_line = checkout.lines.first()
+    checkout_line.price_override = Decimal("2.0")
+    checkout_line.save(update_fields=["price_override"])
+
+    checkout_line_quantity = checkout_line.quantity
+    checkout_line_variant = checkout_line.variant
+
+    channel = checkout.channel
+    channel.automatically_confirm_all_new_orders = True
+    channel.save()
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+    total = calculations.calculate_checkout_total_with_gift_cards(
+        manager, checkout_info, lines, address
+    )
+
+    transaction = transaction_item_generator(
+        checkout_id=checkout.pk, charged_value=total.gross.amount
+    )
+
+    update_checkout_payment_statuses(
+        checkout=checkout_info.checkout,
+        checkout_total_gross=total.gross,
+        checkout_has_lines=bool(lines),
+    )
+
+    redirect_url = "https://www.example.com"
+    variables = {"id": to_global_id_or_none(checkout), "redirectUrl": redirect_url}
+
+    # when
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_COMPLETE, variables)
+
+    # then
+    order = Order.objects.get()
+    content = get_graphql_content(response)
+    data = content["data"]["checkoutComplete"]
+    assert not data["errors"]
+    assert to_global_id_or_none(order) == data["order"]["id"]
+
+    assert order.total_charged_amount == transaction.charged_value
+    assert order.total_authorized == zero_money(order.currency)
+    assert order.charge_status == OrderChargeStatus.FULL
+    assert order.authorize_status == OrderAuthorizeStatus.FULL
+
+    assert order.status == OrderStatus.UNFULFILLED
+    assert order.origin == OrderOrigin.CHECKOUT
+
+    assert order.redirect_url == redirect_url
+    assert order.total.gross == total.gross
+    assert order.metadata == checkout.metadata_storage.metadata
+    assert order.private_metadata == checkout.metadata_storage.private_metadata
+
+    order_line = order.lines.first()
+    line_tax_class = order_line.tax_class
+    shipping_tax_class = shipping_method.tax_class
+
+    assert checkout_line_quantity == order_line.quantity
+    assert checkout_line_variant == order_line.variant
+
+    assert order_line.tax_class == line_tax_class
+    assert order_line.tax_class_name == line_tax_class.name
+    assert order_line.tax_class_metadata == line_tax_class.metadata
+    assert order_line.tax_class_private_metadata == line_tax_class.private_metadata
+    assert order_line.is_price_overridden is True
+
+    assert order.shipping_address == address
+    assert order.shipping_method == checkout.shipping_method
+    assert order.shipping_tax_rate is not None
+    assert order.shipping_tax_class_name == shipping_tax_class.name
+    assert order.shipping_tax_class_metadata == shipping_tax_class.metadata
+    assert (
+        order.shipping_tax_class_private_metadata == shipping_tax_class.private_metadata
+    )
+
+    assert not Checkout.objects.filter()
 
 
 def test_checkout_paid_with_multiple_transactions(
@@ -1672,6 +1772,13 @@ def test_checkout_with_voucher_complete(
         pk=checkout.pk
     ).exists(), "Checkout should have been deleted"
 
+    order_line = order.lines.first()
+    assert (
+        order_line.unit_discount_amount
+        == (discount_amount / order_line.quantity).amount
+    )
+    assert order_line.unit_discount_reason
+
 
 @pytest.mark.integration
 def test_checkout_complete_with_voucher_apply_once_per_order(
@@ -1956,7 +2063,9 @@ def test_checkout_with_voucher_complete_product_on_sale(
     assert order_line.sale_id == graphene.Node.to_global_id(
         "Sale", catalogue_promotion_without_rules.old_sale_id
     )
-    assert order_line.unit_discount_reason == f"Sale: {order_line.sale_id}"
+    assert order_line.unit_discount_reason == (
+        f"Entire order voucher code: {code.code} & Sale: {order_line.sale_id}"
+    )
 
     code.refresh_from_db()
     assert code.used == voucher_used_count + 1
@@ -3718,3 +3827,64 @@ def test_checkout_complete_line_deleted_in_the_meantime(
     assert not data["errors"]
     assert Order.objects.count() == 1
     assert not Checkout.objects.filter(pk=checkout.pk).exists()
+
+
+def test_checkout_complete_with_invalid_address(
+    user_api_client,
+    checkout_with_item,
+    transaction_item_generator,
+    address,
+    shipping_method,
+):
+    """Check if checkout can be completed with invalid address.
+
+    After introducing `AddressInput.skip_validation`, Saleor may have invalid address
+    stored in database.
+    """
+    # given
+    checkout = checkout_with_item
+
+    invalid_postal_code = "invalid postal code"
+    address.postal_code = invalid_postal_code
+    address.validation_skipped = True
+    address.save(update_fields=["validation_skipped", "postal_code"])
+
+    checkout.shipping_address = address
+    checkout.shipping_method = shipping_method
+    checkout.billing_address = address
+    checkout.tax_exemption = True
+    checkout.save()
+
+    channel = checkout.channel
+    channel.automatically_confirm_all_new_orders = True
+    channel.allow_unpaid_orders = True
+    channel.order_mark_as_paid_strategy = MarkAsPaidStrategy.TRANSACTION_FLOW
+    channel.save()
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+    total = calculations.calculate_checkout_total_with_gift_cards(
+        manager, checkout_info, lines, address
+    )
+
+    update_checkout_payment_statuses(
+        checkout=checkout_info.checkout,
+        checkout_total_gross=total.gross,
+        checkout_has_lines=bool(lines),
+    )
+
+    redirect_url = "https://www.example.com"
+    variables = {"id": to_global_id_or_none(checkout), "redirectUrl": redirect_url}
+
+    # when
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_COMPLETE, variables)
+
+    # then
+    content = get_graphql_content(response)
+
+    order = Order.objects.get()
+    data = content["data"]["checkoutComplete"]
+    assert not data["errors"]
+    assert order.shipping_address.postal_code == invalid_postal_code
+    assert order.billing_address.postal_code == invalid_postal_code

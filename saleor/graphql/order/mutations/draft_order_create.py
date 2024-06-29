@@ -343,6 +343,7 @@ class DraftOrderCreate(
             voucher = code_instance.voucher
             cls.clean_voucher_listing(voucher, channel, "voucher_code")
         cleaned_input["voucher"] = voucher
+        cleaned_input["voucher_code"] = voucher_code
         cleaned_input["voucher_code_instance"] = code_instance
 
     @classmethod
@@ -594,6 +595,6 @@ class DraftOrderCreate(
             increase_voucher_usage(
                 voucher,
                 code_instance,
-                instance.user_email or instance.user.email,
+                instance.user_email or instance.user and instance.user.email,
                 increase_voucher_customer_usage=False,
             )

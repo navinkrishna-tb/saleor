@@ -17,6 +17,7 @@ All notable, unreleased changes to this project will be documented in this file.
 - Add `stocks` to a `Warehouse` - #15771 by @teddyondieki
 - Deprecate the `taxTypes` query - #15802 by @maarcingebala
 - Change permissions for `checkout` and `checkouts` queries. Add `HANDLE_PAYMENTS` to required permissions - #16010 by @Air-t
+- Change the `CheckoutRemovePromoCode` mutation behavior to throw a `ValidationError` when the promo code is not detached from the checkout. - #16109 by @Air-t
 
 ### Saleor Apps
 
@@ -29,6 +30,7 @@ All notable, unreleased changes to this project will be documented in this file.
 - Added support for the `BrokerProperties` custom header to webhooks to support Azure Service Bus - #15899 by @patrys
 - Extend valid address values - #15877 by @zedzior
 - Fixed a rare crash in the introspection query detection code - #15966 by @patrys
+- Added HTTP compression telemetry - #16125 by @patrys
 
 # 3.19.0
 
@@ -41,12 +43,14 @@ All notable, unreleased changes to this project will be documented in this file.
 - Drop `OrderBulkCreateInput.voucher` field. Use `OrderBulkCreateInput.voucherCode` instead. - #14553 by @zedzior
 - Add new `type` field to `PromotionCreateInput`, the field will be required from 3.20 - #14696 by @IKarbowiak, @zedzior
 - Do not stack promotion rules within the promotion. Only the best promotion rule will be applied within the promotion. Previously discounts from all rules within the promotion that gives the best discount were applied to the variant's price - #15309 by @korycins
+- Disable the `order.discounts` field in sync events to prevent circular calls - #16111 by @zedzior
 
 ### GraphQL API
 
 - Add taxes to undiscounted prices - #14095 by @jakubkuc
 - Mark as deprecated: `ordersTotal`, `reportProductSales` and `homepageEvents` - #14806 by @8r2y5
 - Add `identifier` field to App graphql object. Identifier field is the same as Manifest.id field (explicit ID set by the app).
+- Add `skipValidation` field to `AddressInput` - #15985 by @zedzior
 
 ### Saleor Apps
 
@@ -68,6 +72,8 @@ All notable, unreleased changes to this project will be documented in this file.
   - Added new parameter `identifier` for `create_app` command.
   - When `taxAppId` is provided for `TaxConfiguration` do not allow to finalize `checkoutComplete` or `draftOrderComplete` mutations if Tax App or Avatax plugin didn't respond.
 - Add `unique_type` to `OrderLineDiscount` and `CheckoutLineDiscount` models - #15774 by @zedzior
+- Allow to skip address validation - #15985 by @zedzior
+  - Added new field `Address.validation_skipped`.
 
 # 3.18.0
 

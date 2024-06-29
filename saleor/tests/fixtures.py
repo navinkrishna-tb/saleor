@@ -81,6 +81,7 @@ from ..giftcard.models import GiftCard, GiftCardEvent, GiftCardTag
 from ..menu.models import Menu, MenuItem, MenuItemTranslation
 from ..order import OrderOrigin, OrderStatus
 from ..order.actions import cancel_fulfillment, fulfill_order_lines
+from ..order.base_calculations import apply_order_discounts
 from ..order.events import (
     OrderEvents,
     fulfillment_refunded_event,
@@ -328,7 +329,7 @@ def _assert_num_queries(context, *, config, num, exact=True, info=None):
         msg += f"\n{info}"
     if verbose:
         sqls = (q["sql"] for q in context.captured_queries)
-        msg += "\n\nQueries:\n========\n\n%s" % "\n\n".join(sqls)
+        msg += "\n\nQueries:\n========\n\n{}".format("\n\n".join(sqls))
     else:
         msg += " (add -v option to show queries)"
     pytest.fail(msg)
@@ -1195,6 +1196,12 @@ def graphql_address_data():
         "phone": "+48321321888",
         "metadata": [{"key": "public", "value": "public_value"}],
     }
+
+
+@pytest.fixture
+def graphql_address_data_skipped_validation(graphql_address_data):
+    graphql_address_data["skipValidation"] = True
+    return graphql_address_data
 
 
 @pytest.fixture
@@ -3505,6 +3512,46 @@ def variant_with_many_stocks(variant, warehouses_with_shipping_zone):
 
 
 @pytest.fixture
+def variant_on_promotion(
+    product, channel_USD, promotion_rule, warehouse
+) -> ProductVariant:
+    product_variant = ProductVariant.objects.create(
+        product=product, sku="SKU_A", external_reference="SKU_A"
+    )
+    price_amount = Decimal(10)
+    ProductVariantChannelListing.objects.create(
+        variant=product_variant,
+        channel=channel_USD,
+        price_amount=price_amount,
+        discounted_price_amount=price_amount,
+        cost_price_amount=Decimal(1),
+        currency=channel_USD.currency_code,
+    )
+    Stock.objects.create(
+        warehouse=warehouse, product_variant=product_variant, quantity=10
+    )
+
+    promotion_rule.variants.add(product_variant)
+    reward_value = promotion_rule.reward_value
+    discount_amount = price_amount * reward_value / 100
+
+    variant_channel_listing = product_variant.channel_listings.get(channel=channel_USD)
+
+    variant_channel_listing.discounted_price_amount = (
+        variant_channel_listing.price_amount - reward_value
+    )
+    variant_channel_listing.save(update_fields=["discounted_price_amount"])
+
+    variant_channel_listing.variantlistingpromotionrule.create(
+        promotion_rule=promotion_rule,
+        discount_amount=discount_amount,
+        currency=channel_USD.currency_code,
+    )
+
+    return product_variant
+
+
+@pytest.fixture
 def preorder_variant_global_threshold(product, channel_USD):
     product_variant = ProductVariant.objects.create(
         product=product, sku="SKU_A_P", is_preorder=True, preorder_global_threshold=10
@@ -5659,6 +5706,7 @@ def draft_order_with_fixed_discount_order(draft_order):
     draft_order.total = discount(draft_order.total)
     draft_order.discounts.create(
         value_type=DiscountValueType.FIXED,
+        type=DiscountType.MANUAL,
         value=value,
         reason="Discount reason",
         amount=(draft_order.undiscounted_total - draft_order.total).gross,
@@ -5686,6 +5734,34 @@ def draft_order_with_voucher(
     channel = order.channel
     channel.include_draft_order_in_voucher_usage = True
     channel.save(update_fields=["include_draft_order_in_voucher_usage"])
+
+    return order
+
+
+@pytest.fixture
+def draft_order_with_free_shipping_voucher(
+    draft_order_with_fixed_discount_order, voucher_free_shipping
+):
+    order = draft_order_with_fixed_discount_order
+    voucher_code = voucher_free_shipping.codes.first()
+    discount = order.discounts.first()
+    discount.type = DiscountType.VOUCHER
+    discount.voucher = voucher_free_shipping
+    discount.voucher_code = voucher_code.code
+    discount.save(update_fields=["type", "voucher", "voucher_code"])
+
+    channel = order.channel
+    channel.include_draft_order_in_voucher_usage = True
+    channel.save(update_fields=["include_draft_order_in_voucher_usage"])
+
+    order.voucher = voucher_free_shipping
+    order.voucher_code = voucher_code.code
+    subtotal, shipping_price = apply_order_discounts(order, order.lines.all())
+    order.subtotal = TaxedMoney(gross=subtotal, net=subtotal)
+    order.shipping_price = TaxedMoney(net=shipping_price, gross=shipping_price)
+    total = subtotal + shipping_price
+    order.total = TaxedMoney(net=total, gross=total)
+    order.save()
 
     return order
 
