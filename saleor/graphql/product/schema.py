@@ -256,7 +256,6 @@ class ProductQueries(graphene.ObjectType):
         channel=graphene.String(
             description="Slug of a channel for which the data should be returned."
         ),
-        account_id=graphene.String(description="Account Id of the channel"),
         description=(
             "List of the shop's products. Requires one of the following permissions to "
             "include the unpublished items: "
