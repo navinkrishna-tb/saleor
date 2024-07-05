@@ -854,7 +854,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
     seo_title = graphene.String(description="SEO title of the product.")
     seo_description = graphene.String(description="SEO description of the product.")
     name = graphene.String(required=True, description="SEO description of the product.")
-    acccount_id = graphene.String(description="Account Id of the product")
+    account_id = graphene.String(description="Account Id of the product")
     description = JSONString(description="Description of the product." + RICH_CONTENT)
     product_type = graphene.Field(
         lambda: ProductType, required=True, description="Type of the product."
