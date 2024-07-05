@@ -1040,10 +1040,6 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
         return root.channel_slug
 
     @staticmethod
-    def resolve_account_id(root: ChannelContext[models.Product], _info):
-        return root.node.account_id
-
-    @staticmethod
     def resolve_default_variant(root: ChannelContext[models.Product], info):
         default_variant_id = root.node.default_variant_id
         if default_variant_id is None:
