@@ -46,6 +46,7 @@ class ProductInput(BaseInputObjectType):
     )
     description = JSONString(description="Product description." + RICH_CONTENT)
     name = graphene.String(description="Product name.")
+    account_id = graphene.String(description="Account ID.")
     slug = graphene.String(description="Product slug.")
     tax_class = graphene.ID(
         description=(
